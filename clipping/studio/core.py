@@ -56,6 +56,7 @@ get_local_bgm_file = audio_bgm.get_local_bgm_file
 build_bgm_filter = audio_bgm.build_bgm_filter
 broll = _load_studio_internal_module("broll.py", "clipping_studio_broll")
 download_pexels_broll = broll.download_pexels_broll
+download_pixabay_broll = broll.download_pixabay_broll
 crop_center_broll = broll.crop_center_broll
 subtitles = _load_studio_internal_module("subtitles.py", "clipping_studio_subtitles")
 buat_file_ass = subtitles.buat_file_ass
@@ -252,11 +253,20 @@ def proses_klip(
     broll_list = clip.get("broll_list", [])
     broll_aktif = []
     if cfg.use_broll and broll_list:
-        print(f"   🎥 Mendownload {len(broll_list)} video B-Roll dari Pexels...")
+        pexels_key = getattr(cfg, "pexels_api_key", "")
+        pixabay_key = getattr(cfg, "pixabay_api_key", "")
+        provider = "Pexels" if pexels_key else "Pixabay"
+        print(f"   🎥 Mendownload {len(broll_list)} video B-Roll dari {provider}...")
         for i, br in enumerate(broll_list):
             q = br.get("search_query", "nature")
             file_broll = f"temp_broll_{rank}_{i}.mp4"
-            if download_pexels_broll(q, rasio, file_broll, cfg.pexels_api_key):
+            # Pexels first (if configured), Pixabay as fallback / sole provider.
+            ok = bool(pexels_key) and download_pexels_broll(
+                q, rasio, file_broll, pexels_key
+            )
+            if not ok and pixabay_key:
+                ok = download_pixabay_broll(q, rasio, file_broll, pixabay_key)
+            if ok:
                 br_copy = dict(br)
                 br_copy["filepath"] = file_broll
                 broll_aktif.append(br_copy)

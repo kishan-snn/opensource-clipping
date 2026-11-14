@@ -54,6 +54,7 @@ siapkan_font_tipografi = _core.siapkan_font_tipografi
 get_local_bgm_file = _core.get_local_bgm_file
 build_bgm_filter = _core.build_bgm_filter
 download_pexels_broll = _core.download_pexels_broll
+download_pixabay_broll = _core.download_pixabay_broll
 crop_center_broll = _core.crop_center_broll
 buat_video_hybrid = _core.buat_video_hybrid
 buat_file_ass = _core.buat_file_ass

@@ -154,6 +154,100 @@ def download_pexels_broll(query, rasio, output_filename, pexels_api_key):
         return False
 
 
+USED_PIXABAY_IDS = set()
+
+
+def download_pixabay_broll(query, rasio, output_filename, pixabay_api_key):
+    """
+    Search and download one Pixabay B-roll video clip matching the query and aspect ratio.
+
+    Pixabay's video API has no orientation filter, so results are filtered locally
+    by comparing each file's width and height with the target orientation.
+
+    Args:
+        query (str): Search query term (e.g., 'nature', 'technology').
+        rasio (str): Target aspect ratio string (`9:16` for portrait or `16:9` for landscape).
+        output_filename (str): Local file path where the downloaded MP4 will be saved.
+        pixabay_api_key (str): Valid Pixabay API key.
+
+    Returns:
+        bool: True if the video was successfully downloaded and saved, False otherwise.
+
+    Side Effects:
+        Makes HTTP GET requests to the Pixabay API and video CDN.
+        Mutates the global `USED_PIXABAY_IDS` set to prevent duplicate downloads.
+        Writes a temporary file (`.part`) and renames it upon successful download.
+    """
+    global USED_PIXABAY_IDS
+
+    if not pixabay_api_key:
+        print("   ⚠️ PIXABAY_API_KEY tidak ditemukan. B-roll dilewati.")
+        return False
+
+    want_portrait = _is_vertical_ratio(rasio)
+
+    params = urllib.parse.urlencode(
+        {
+            "key": pixabay_api_key,
+            "q": query,
+            "video_type": "film",
+            "per_page": 50,
+            "safesearch": "true",
+        }
+    )
+    search_url = f"https://pixabay.com/api/videos/?{params}"
+    req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            data = json.load(response)
+    except Exception as e:
+        print(f"   ⚠️ Error API Pixabay saat mencari '{query}': {e}")
+        return False
+
+    # Collect (hit_id, file_info) pairs whose orientation matches; best quality first.
+    candidates = []
+    for hit in data.get("hits", []):
+        files = hit.get("videos", {})
+        for size_name in ("large", "medium", "small"):
+            info = files.get(size_name) or {}
+            url = info.get("url")
+            w, h = info.get("width") or 0, info.get("height") or 0
+            if not url or not w or not h:
+                continue
+            if (h > w) == want_portrait:
+                candidates.append((hit["id"], info))
+                break
+
+    if not candidates:
+        print(f"   ⚠️ Pixabay tidak menemukan video yang cocok untuk '{query}'.")
+        return False
+
+    available = [c for c in candidates if c[0] not in USED_PIXABAY_IDS]
+    if not available:
+        print(f"   🔄 B-roll pool untuk '{query}' habis, me-reset.")
+        available = candidates
+
+    video_id, info = random.choice(available)
+    USED_PIXABAY_IDS.add(video_id)
+
+    download_req = urllib.request.Request(
+        info["url"], headers={"User-Agent": "Mozilla/5.0"}
+    )
+    try:
+        temp_path = output_filename + ".part"
+        with (
+            urllib.request.urlopen(download_req) as response,
+            open(temp_path, "wb") as f,
+        ):
+            shutil.copyfileobj(response, f)
+        os.replace(temp_path, output_filename)
+        return True
+    except Exception as e:
+        print(f"   ⚠️ Error saat mengunduh B-roll '{query}': {e}")
+        return False
+
+
 def crop_center_broll(img, target_w, target_h):
     """
     Center-crop an image frame to the exact target aspect ratio, then resize it.

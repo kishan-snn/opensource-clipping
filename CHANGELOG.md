@@ -8,6 +8,11 @@ All notable changes to the **OpenSource Clipping** project will be documented in
 - **Patch (x.y.Z)**: Incremented for backward-compatible bug fixes or minor patches.
 
 
+## [Unreleased]
+
+### Added
+- **Pixabay B-roll provider**: Set `PIXABAY_API_KEY` to fetch B-roll from Pixabay. Pexels remains the first choice when `PEXELS_API_KEY` is set; Pixabay is used as a fallback when a Pexels lookup fails, or as the sole provider when no Pexels key exists (Pexels currently has new API key issuance paused). Orientation is filtered locally because the Pixabay video API has no orientation parameter. Added to `.env.sample`, `docker-compose.yml`, CLI config and the Studio config adapter.
+
 ## [v1.15.7]
 
 ### Fixed

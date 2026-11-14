@@ -841,6 +841,7 @@ def build_config(argv: list[str] | None = None) -> SimpleNamespace:
         api_key_gemini=os.environ.get("GOOGLE_API_KEY", ""),
         hf_token=os.environ.get("HF_TOKEN", ""),
         pexels_api_key=os.environ.get("PEXELS_API_KEY", ""),
+        pixabay_api_key=os.environ.get("PIXABAY_API_KEY", ""),
         # Pengaturan utama
         source_platform="tiktok" if args.tiktok else args.source,
         url_youtube=url_list[0] if len(url_list) == 1 else url_list,
