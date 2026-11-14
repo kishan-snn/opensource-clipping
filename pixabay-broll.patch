@@ -1,0 +1,279 @@
+diff --git a/.env.sample b/.env.sample
+index 8d5fcf3..1932f36 100644
+--- a/.env.sample
++++ b/.env.sample
+@@ -13,6 +13,10 @@ GOOGLE_API_KEY=your-gemini-api-key-here
+ # Get yours at: https://www.pexels.com/api/
+ PEXELS_API_KEY=your-pexels-api-key-here
+ 
++# [OPTIONAL] Pixabay API Key — alternative B-roll source (used if Pexels key is missing or fails)
++# Get yours at: https://pixabay.com/api/docs/
++PIXABAY_API_KEY=your-pixabay-api-key-here
++
+ # [OPTIONAL] HuggingFace Token — needed for split-screen mode (Pyannote speaker diarization)
+ # Get yours at: https://huggingface.co/settings/tokens
+ # You must also accept the model agreement: https://huggingface.co/pyannote/speaker-diarization-3.1
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 5312f1d..e7e8527 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -8,6 +8,11 @@ All notable changes to the **OpenSource Clipping** project will be documented in
+ - **Patch (x.y.Z)**: Incremented for backward-compatible bug fixes or minor patches.
+ 
+ 
++## [Unreleased]
++
++### Added
++- **Pixabay B-roll provider**: Set `PIXABAY_API_KEY` to fetch B-roll from Pixabay. Pexels remains the first choice when `PEXELS_API_KEY` is set; Pixabay is used as a fallback when a Pexels lookup fails, or as the sole provider when no Pexels key exists (Pexels currently has new API key issuance paused). Orientation is filtered locally because the Pixabay video API has no orientation parameter. Added to `.env.sample`, `docker-compose.yml`, CLI config and the Studio config adapter.
++
+ ## [v1.15.7]
+ 
+ ### Fixed
+diff --git a/clipping/config.py b/clipping/config.py
+index a2a0f80..8e04d39 100644
+--- a/clipping/config.py
++++ b/clipping/config.py
+@@ -841,6 +841,7 @@ def build_config(argv: list[str] | None = None) -> SimpleNamespace:
+         api_key_gemini=os.environ.get("GOOGLE_API_KEY", ""),
+         hf_token=os.environ.get("HF_TOKEN", ""),
+         pexels_api_key=os.environ.get("PEXELS_API_KEY", ""),
++        pixabay_api_key=os.environ.get("PIXABAY_API_KEY", ""),
+         # Pengaturan utama
+         source_platform="tiktok" if args.tiktok else args.source,
+         url_youtube=url_list[0] if len(url_list) == 1 else url_list,
+diff --git a/clipping/studio.py b/clipping/studio.py
+index 352bbaf..ef0f051 100644
+--- a/clipping/studio.py
++++ b/clipping/studio.py
+@@ -54,6 +54,7 @@ siapkan_font_tipografi = _core.siapkan_font_tipografi
+ get_local_bgm_file = _core.get_local_bgm_file
+ build_bgm_filter = _core.build_bgm_filter
+ download_pexels_broll = _core.download_pexels_broll
++download_pixabay_broll = _core.download_pixabay_broll
+ crop_center_broll = _core.crop_center_broll
+ buat_video_hybrid = _core.buat_video_hybrid
+ buat_file_ass = _core.buat_file_ass
+diff --git a/clipping/studio/broll.py b/clipping/studio/broll.py
+index 6283882..aa8e6bb 100644
+--- a/clipping/studio/broll.py
++++ b/clipping/studio/broll.py
+@@ -154,6 +154,100 @@ def download_pexels_broll(query, rasio, output_filename, pexels_api_key):
+         return False
+ 
+ 
++USED_PIXABAY_IDS = set()
++
++
++def download_pixabay_broll(query, rasio, output_filename, pixabay_api_key):
++    """
++    Search and download one Pixabay B-roll video clip matching the query and aspect ratio.
++
++    Pixabay's video API has no orientation filter, so results are filtered locally
++    by comparing each file's width and height with the target orientation.
++
++    Args:
++        query (str): Search query term (e.g., 'nature', 'technology').
++        rasio (str): Target aspect ratio string (`9:16` for portrait or `16:9` for landscape).
++        output_filename (str): Local file path where the downloaded MP4 will be saved.
++        pixabay_api_key (str): Valid Pixabay API key.
++
++    Returns:
++        bool: True if the video was successfully downloaded and saved, False otherwise.
++
++    Side Effects:
++        Makes HTTP GET requests to the Pixabay API and video CDN.
++        Mutates the global `USED_PIXABAY_IDS` set to prevent duplicate downloads.
++        Writes a temporary file (`.part`) and renames it upon successful download.
++    """
++    global USED_PIXABAY_IDS
++
++    if not pixabay_api_key:
++        print("   ⚠️ PIXABAY_API_KEY tidak ditemukan. B-roll dilewati.")
++        return False
++
++    want_portrait = _is_vertical_ratio(rasio)
++
++    params = urllib.parse.urlencode(
++        {
++            "key": pixabay_api_key,
++            "q": query,
++            "video_type": "film",
++            "per_page": 50,
++            "safesearch": "true",
++        }
++    )
++    search_url = f"https://pixabay.com/api/videos/?{params}"
++    req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
++
++    try:
++        with urllib.request.urlopen(req) as response:
++            data = json.load(response)
++    except Exception as e:
++        print(f"   ⚠️ Error API Pixabay saat mencari '{query}': {e}")
++        return False
++
++    # Collect (hit_id, file_info) pairs whose orientation matches; best quality first.
++    candidates = []
++    for hit in data.get("hits", []):
++        files = hit.get("videos", {})
++        for size_name in ("large", "medium", "small"):
++            info = files.get(size_name) or {}
++            url = info.get("url")
++            w, h = info.get("width") or 0, info.get("height") or 0
++            if not url or not w or not h:
++                continue
++            if (h > w) == want_portrait:
++                candidates.append((hit["id"], info))
++                break
++
++    if not candidates:
++        print(f"   ⚠️ Pixabay tidak menemukan video yang cocok untuk '{query}'.")
++        return False
++
++    available = [c for c in candidates if c[0] not in USED_PIXABAY_IDS]
++    if not available:
++        print(f"   🔄 B-roll pool untuk '{query}' habis, me-reset.")
++        available = candidates
++
++    video_id, info = random.choice(available)
++    USED_PIXABAY_IDS.add(video_id)
++
++    download_req = urllib.request.Request(
++        info["url"], headers={"User-Agent": "Mozilla/5.0"}
++    )
++    try:
++        temp_path = output_filename + ".part"
++        with (
++            urllib.request.urlopen(download_req) as response,
++            open(temp_path, "wb") as f,
++        ):
++            shutil.copyfileobj(response, f)
++        os.replace(temp_path, output_filename)
++        return True
++    except Exception as e:
++        print(f"   ⚠️ Error saat mengunduh B-roll '{query}': {e}")
++        return False
++
++
+ def crop_center_broll(img, target_w, target_h):
+     """
+     Center-crop an image frame to the exact target aspect ratio, then resize it.
+diff --git a/clipping/studio/core.py b/clipping/studio/core.py
+index 9775c02..9746585 100644
+--- a/clipping/studio/core.py
++++ b/clipping/studio/core.py
+@@ -56,6 +56,7 @@ get_local_bgm_file = audio_bgm.get_local_bgm_file
+ build_bgm_filter = audio_bgm.build_bgm_filter
+ broll = _load_studio_internal_module("broll.py", "clipping_studio_broll")
+ download_pexels_broll = broll.download_pexels_broll
++download_pixabay_broll = broll.download_pixabay_broll
+ crop_center_broll = broll.crop_center_broll
+ subtitles = _load_studio_internal_module("subtitles.py", "clipping_studio_subtitles")
+ buat_file_ass = subtitles.buat_file_ass
+@@ -252,11 +253,20 @@ def proses_klip(
+     broll_list = clip.get("broll_list", [])
+     broll_aktif = []
+     if cfg.use_broll and broll_list:
+-        print(f"   🎥 Mendownload {len(broll_list)} video B-Roll dari Pexels...")
++        pexels_key = getattr(cfg, "pexels_api_key", "")
++        pixabay_key = getattr(cfg, "pixabay_api_key", "")
++        provider = "Pexels" if pexels_key else "Pixabay"
++        print(f"   🎥 Mendownload {len(broll_list)} video B-Roll dari {provider}...")
+         for i, br in enumerate(broll_list):
+             q = br.get("search_query", "nature")
+             file_broll = f"temp_broll_{rank}_{i}.mp4"
+-            if download_pexels_broll(q, rasio, file_broll, cfg.pexels_api_key):
++            # Pexels first (if configured), Pixabay as fallback / sole provider.
++            ok = bool(pexels_key) and download_pexels_broll(
++                q, rasio, file_broll, pexels_key
++            )
++            if not ok and pixabay_key:
++                ok = download_pixabay_broll(q, rasio, file_broll, pixabay_key)
++            if ok:
+                 br_copy = dict(br)
+                 br_copy["filepath"] = file_broll
+                 broll_aktif.append(br_copy)
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 208cf2c..377c9d0 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -13,6 +13,7 @@ services:
+     environment:
+       - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+       - PEXELS_API_KEY=${PEXELS_API_KEY:-}
++      - PIXABAY_API_KEY=${PIXABAY_API_KEY:-}
+       - HF_TOKEN=${HF_TOKEN:-}
+       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-}
+       - MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-1}
+diff --git a/tests/test_pixabay_broll.py b/tests/test_pixabay_broll.py
+new file mode 100644
+index 0000000..b2be124
+--- /dev/null
++++ b/tests/test_pixabay_broll.py
+@@ -0,0 +1,54 @@
++import importlib.util
++import io
++import json
++import sys
++import types
++from pathlib import Path
++
++import pytest
++
++BROLL = Path(__file__).resolve().parents[1] / "clipping" / "studio" / "broll.py"
++
++
++def _hit(hit_id, w, h):
++    return {"id": hit_id, "videos": {"large": {"url": f"https://cdn.test/{hit_id}.mp4", "width": w, "height": h}}}
++
++
++@pytest.fixture
++def pixabay_download(monkeypatch):
++    """Extract just download_pixabay_broll so the test needs no cv2/mediapipe."""
++    src = BROLL.read_text(encoding="utf-8")
++    start = src.index("USED_PIXABAY_IDS = set()")
++    end = src.index("def crop_center_broll")
++    ns = {}
++    import json as _json, os, random, shutil, urllib.parse, urllib.request
++    ns.update(json=_json, os=os, random=random, shutil=shutil, urllib=urllib)
++    ns["_is_vertical_ratio"] = lambda r: r in ("9:16", "3:4", "4:5")
++    exec(compile(src[start:end], "broll_pixabay", "exec"), ns)
++    return ns
++
++
++def _fake_urlopen(search_payload):
++    def _open(req, *a, **k):
++        url = req.full_url
++        if "pixabay.com/api/videos" in url:
++            return io.BytesIO(json.dumps(search_payload).encode())
++        return io.BytesIO(b"video-bytes")
++    return _open
++
++
++def test_picks_portrait_for_vertical_ratio(pixabay_download, tmp_path, monkeypatch):
++    payload = {"hits": [_hit(1, 1920, 1080), _hit(2, 1080, 1920)]}
++    monkeypatch.setattr(pixabay_download["urllib"].request, "urlopen", _fake_urlopen(payload))
++    out = tmp_path / "b.mp4"
++    assert pixabay_download["download_pixabay_broll"]("sea", "9:16", str(out), "key") is True
++    assert out.read_bytes() == b"video-bytes"
++    assert pixabay_download["USED_PIXABAY_IDS"] == {2}
++
++
++def test_no_key_or_no_match_returns_false(pixabay_download, tmp_path, monkeypatch):
++    assert pixabay_download["download_pixabay_broll"]("sea", "9:16", str(tmp_path / "b.mp4"), "") is False
++    monkeypatch.setattr(
++        pixabay_download["urllib"].request, "urlopen", _fake_urlopen({"hits": [_hit(1, 1920, 1080)]})
++    )
++    assert pixabay_download["download_pixabay_broll"]("sea", "9:16", str(tmp_path / "b.mp4"), "key") is False
+diff --git a/web/api/config_adapter.py b/web/api/config_adapter.py
+index 27f8be2..f03f5f7 100644
+--- a/web/api/config_adapter.py
++++ b/web/api/config_adapter.py
+@@ -150,6 +150,7 @@ def build_config_from_payload(
+         api_key_gemini=env.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", "")),
+         hf_token=env.get("HF_TOKEN", os.environ.get("HF_TOKEN", "")),
+         pexels_api_key=env.get("PEXELS_API_KEY", os.environ.get("PEXELS_API_KEY", "")),
++        pixabay_api_key=env.get("PIXABAY_API_KEY", os.environ.get("PIXABAY_API_KEY", "")),
+         # Pengaturan utama
+         source_platform=source_platform,
+         url_youtube=payload.get("url"),
